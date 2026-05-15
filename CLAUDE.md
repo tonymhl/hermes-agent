@@ -60,6 +60,9 @@ Each `tools/*.py` file calls `registry.register()` at import time. `model_tools.
 
 **Adding a tool:** Create `tools/my_tool.py` with schema + handler + `registry.register(...)`. Then add the tool name to the appropriate list in `toolsets.py` (e.g. `_HERMES_CORE_TOOLS`) — the tool registers but won't be exposed to the agent without that step.
 
+### Toolsets (`toolsets.py`)
+Tools are grouped into named sets (`web`, `terminal`, `file`, `browser`, `code`, etc.). The `model` config's `toolsets` field controls which groups are active per platform/preset. Adding a tool to `tools/*.py` only makes it *available* — adding it to a toolset in `toolsets.py` makes it *exposed to the agent*.
+
 ### Session Persistence (`hermes_state.py`)
 SQLite with FTS5 full-text search. WAL mode by default; falls back to `journal_mode=DELETE` on NFS/SMB where WAL breaks. SessionDB chain: parent_session_id for compression-triggered splits. Batch runner and RL trajectories use separate storage.
 
@@ -110,6 +113,35 @@ Run `scripts/check-windows-footguns.py` on any diff touching process management,
 
 Profile-aware paths via `get_hermes_home()` in `hermes_constants.py`. Browse logs: `hermes logs [--follow] [--level ...] [--session ...]`.
 
+## Docker
+
+Offline/offline air-gapped deployment is supported via the official Dockerfile.
+
+```bash
+# Build the image (requires network on build machine)
+docker build -t hermes-agent:latest .
+
+# Save as offline tarball for transfer to air-gapped network
+docker save hermes-agent:latest | gzip > hermes-agent.tar.gz
+
+# On the air-gapped target: load the image
+gunzip -c hermes-agent.tar.gz | docker load
+
+# Run via docker-compose (sets up HERMES_HOME volume mount)
+HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
+```
+
+The container runs as a non-root user (`hermes:hermes`, UID 10000 by default), with `HERMES_HOME` mounted to a host volume for persistent state. Override with `HERMES_UID`/`HERMES_GID` env vars to match host user ownership. See `docker/entrypoint.sh` for the full bootstrap flow (config scaffolding, skills sync, privilege drop).
+
+## Self-Evolution (Curator)
+
+The Curator (`agent/curator.py`) is Hermes' background self-improvement engine. It runs periodically (default: every 7 days, configurable via `curator.interval_hours` in config.yaml) and performs two passes:
+
+1. **Automatic transitions (no LLM):** Marks agent-created skills as `stale` → `archived` based on last-use timestamps. Never deletes; archiving to `~/.hermes/skills/.archive/` is recoverable.
+2. **LLM consolidation pass:** Spawns a forked AIAgent to review skills, merge narrow siblings into umbrella-class skills, and move session-specific content into `references/`, `templates/`, or `scripts/` subfiles. Operates only on agent-created skills (never bundled or hub-installed).
+
+Curator output lives in `~/.hermes/logs/curator/{YYYYMMDD-HHMMSS}/` as `run.json` + `REPORT.md`. State is persisted in `~/.hermes/skills/.curator_state`.
+
 ## Security Notes
 
 - Terminal access is unrestricted by default — dangerous command detection in `tools/approval.py` prompts for approval.
@@ -118,3 +150,7 @@ Profile-aware paths via `get_hermes_home()` in `hermes_constants.py`. Browse log
 - Write deny list resolves symlinks with `os.path.realpath()` before checking protected paths.
 - Code execution (`execute_code`) strips API keys from the subprocess environment.
 - Never log secrets — use `logger.warning/logger.error` with `exc_info=True` for unexpected errors.
+
+## Additional Reference
+
+- `AGENTS.md` — detailed development guide written for AI coding assistants. Covers adding tools, skills, skins, platform-specific patterns, and cross-platform compatibility in much greater detail. **Read this first** before working in a new area.
